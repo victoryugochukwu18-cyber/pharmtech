@@ -174,7 +174,7 @@ document.addEventListener("submit",async e=>{
 $("#lo").onclick=async()=>{try{await api("logout",{method:"POST"})}catch(e){}out();amsg=null;mode="in";showAuth()};
 $("#menu").onclick=()=>$("#side").classList.toggle("open");
 (async()=>{
- if(TOKEN){try{PT.user=await api("me");await load();showApp();return}catch(e){if(e.message==="signed out")return;out()}}
+ if(TOKEN){try{PT.user=await api("me");await load();showApp();return}catch(e){if(e.message==="signed out")return;out()}
  showAuth();
 })();
 </script>
