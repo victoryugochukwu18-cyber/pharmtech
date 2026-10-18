@@ -121,7 +121,7 @@ def diff_section(section, old, new):
     rest_new = {k: v for k, v in new.items() if k not in used}
     d = desc(rest_old, rest_new)
     if d:
-        out.append(("(settings)", "Changed", "; ".join(d)[:900]))
+        out.append(("(settings)", "Changed", "; ".join(d)[:900])
     if len(out) > MAX_ENTRIES:
         extra = len(out) - MAX_ENTRIES
         out = out[:MAX_ENTRIES] + [("(many)", "Changed", f"{extra} further changes in this save")]
