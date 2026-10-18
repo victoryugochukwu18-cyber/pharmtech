@@ -4,13 +4,16 @@ import json
 import os
 import re
 import secrets
+import struct
 import time
+import zlib
+from functools import lru_cache
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from auditlog import chain_hash, diff_section
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, create_engine
@@ -449,6 +452,77 @@ def patch_member(mid: int, p: MemberPatch, u=Depends(owner_only)):
     return {"ok": True}
 
 
+HEAD_TAGS = (
+    '<link rel="manifest" href="/manifest.webmanifest">'
+    '<meta name="theme-color" content="#0f6f8f">'
+    '<meta name="mobile-web-app-capable" content="yes">'
+    '<meta name="apple-mobile-web-app-capable" content="yes">'
+    '<meta name="apple-mobile-web-app-title" content="PharmaTech">'
+    '<link rel="apple-touch-icon" href="/icon-192.png">'
+)
+SW_TAG = (
+    '<script>if("serviceWorker" in navigator){window.addEventListener("load",function(){'
+    'navigator.serviceWorker.register("/sw.js")})}</script>'
+)
+SW_JS = """self.addEventListener("install", function (e) { self.skipWaiting(); });
+self.addEventListener("activate", function (e) { e.waitUntil(self.clients.claim()); });
+self.addEventListener("fetch", function (e) {
+  if (e.request.mode === "navigate") {
+    e.respondWith(fetch(e.request).catch(function () {
+      return new Response("<h1>PharmaTech</h1><p>You are offline. Reconnect to use the software.</p>",
+        { headers: { "Content-Type": "text/html" } });
+    }));
+  }
+});
+"""
+
+
+@lru_cache(maxsize=8)
+def make_icon(size):
+    bg, fg = (15, 111, 143), (255, 255, 255)
+    c, arm, half = size / 2, size * 0.07, size * 0.27
+    rows = []
+    for y in range(size):
+        row = bytearray([0])
+        for x in range(size):
+            dx, dy = abs(x + 0.5 - c), abs(y + 0.5 - c)
+            on = (dx <= arm and dy <= half) or (dy <= arm and dx <= half)
+            row += bytes(fg if on else bg)
+        rows.append(bytes(row))
+
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    icons = [{"src": f"/icon-{s}.png", "sizes": f"{s}x{s}", "type": "image/png", "purpose": "any maskable"}
+             for s in (192, 512)]
+    return JSONResponse({
+        "name": "PharmaTech Solutions", "short_name": "PharmaTech", "start_url": "/", "scope": "/",
+        "display": "standalone", "background_color": "#0e1a20", "theme_color": "#0f6f8f", "icons": icons,
+    }, media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker():
+    return Response(SW_JS, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/icon-{size}.png")
+def icon(size: int):
+    if size not in (180, 192, 512):
+        raise HTTPException(404, "No such icon")
+    return Response(make_icon(size), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/")
 def home():
-    return FileResponse(Path(__file__).parent / "index.html")
+    html = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
+    html = html.replace("</head>", HEAD_TAGS + "</head>", 1).replace("</body>", SW_TAG + "</body>", 1)
+    return Response(html, media_type="text/html")
